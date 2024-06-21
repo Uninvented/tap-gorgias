@@ -25,13 +25,9 @@ class TicketsStream(GorgiasStream):
     """Define custom stream."""
 
     name = "tickets"
-    path = "/api/views/{view_id}/items"
+    path = "/api/tickets"
     primary_keys = ["id"]
     replication_key = "updated_datetime"
-    is_sorted = True
-
-    # Link to the next items, if any.
-    next_page_token_jsonpath = "$.meta.next_items"
 
     schema = th.PropertiesList(
         th.Property("id", th.IntegerType),
@@ -102,173 +98,10 @@ class TicketsStream(GorgiasStream):
         th.Property("snooze_datetime", th.DateTimeType),
     ).to_dict()
 
-    def prepare_request(
-        self, context: Optional[dict], next_page_token: Optional[Any]
-    ) -> requests.PreparedRequest:
-        """Prepare a request object.
-
-        If partitioning is supported, the `context` object will contain the partition
-        definitions. Pagination information can be parsed from `next_page_token` if
-        `next_page_token` is not None.
-
-        Args:
-            context: Stream partition or context dictionary.
-            next_page_token: Token, page number or any request argument to request the
-                next page of data.
-
-        Returns:
-            Build a request with the stream's URL, path, query parameters,
-            HTTP headers and authenticator.
-        """
-        http_method = self.rest_method
-        params = self.get_url_params(context, next_page_token)
-
-        request_data = self.prepare_request_payload(context, next_page_token)
-
-        headers = self.get_headers()
-
-        request = cast(
-            requests.PreparedRequest,
-            self.requests_session.prepare_request(
-                requests.Request(
-                    method=http_method,
-                    url=self.get_url(context),
-                    params=params,
-                    headers=headers,
-                    json=request_data,
-                )
-            ),
-        )
-        return request
-
-    def get_current_user_id(self) -> int:
-        headers = self.get_headers()
-        decorated_request = self.request_decorator(self._request)
-        prepared_request = cast(
-            requests.PreparedRequest,
-            self.requests_session.prepare_request(
-                requests.Request(
-                    method="get",
-                    url=self.url_base + "/api/users/0",
-                    headers=headers,
-                ),
-            ),
-        )
-        resp = decorated_request(prepared_request, None)
-        return resp.json()["id"]
-
-    def create_ticket_view(self, sync_start_datetime: datetime) -> int:
-        headers = self.get_headers()
-        current_user_id = self.get_current_user_id()
-        shared_with_users = [current_user_id] + self.config.get("view_shared_with_users")
-        payload = {
-            "category": "user",
-            "order_by": "updated_datetime",
-            "order_dir": "asc",
-            "visibility": self.config.get("view_visibility"),
-            "shared_with_users": shared_with_users,
-            "type": "ticket-list",
-            "slug": "could-be-anything",
-            "name": self.config.get("view_name"),
-        }
-
-        # When visibility is public, API will not accept `shared_with_users`
-        # nor `shared_with_groups`
-        if self.config.get("view_visibility") == "public":
-            del payload["shared_with_users"]
-
-        if sync_start_datetime:
-            payload.update(
-                {
-                    "filters": f"gte(ticket.updated_datetime, '{sync_start_datetime.isoformat()}')"
-                }
-            )
-        logger.info(f"Creating ticket view with parameters {payload}")
-        decorated_request = self.request_decorator(self._request)
-        prepared_request = cast(
-            requests.PreparedRequest,
-            self.requests_session.prepare_request(
-                requests.Request(
-                    method="post",
-                    url=self.url_base + "/api/views",
-                    headers=headers,
-                    json=payload,
-                ),
-            ),
-        )
-        resp = decorated_request(prepared_request, None)
-        logger.info("View successfully created.")
-        view_id = resp.json()["id"]
-        return view_id
-
-    def delete_ticket_view(self, view_id: int) -> None:
-        headers = self.get_headers()
-        decorated_request = self.request_decorator(self._request)
-        prepared_request = cast(
-            requests.PreparedRequest,
-            self.requests_session.prepare_request(
-                requests.Request(
-                    method="delete",
-                    url=self.url_base + f"/api/views/{view_id}/",
-                    headers=headers,
-                ),
-            ),
-        )
-        resp = decorated_request(prepared_request, None)
-        logger.info(f"Deleted ticket view {view_id}")
-
-    def get_records(self, context: Optional[dict]) -> Iterable[Dict[str, Any]]:
-        """Return a generator of row-type dictionary objects.
-
-        Each row emitted should be a dictionary of property names to their values.
-
-        Args:
-            context: Stream partition or context dictionary.
-
-        Yields:
-            One item per (possibly processed) record in the API.
-        """
-        sync_start_datetime = self.get_starting_timestamp(context)
-        logger.info(f"Starting timestamp: {sync_start_datetime}")
-        view_id = self.create_ticket_view(sync_start_datetime)
-        context = context or {}
-        context["view_id"] = view_id
-        try:
-            for record in self.request_records(context):
-                transformed_record = self.post_process(record, context)
-                if transformed_record is None:
-                    # Record filtered out during post_process()
-                    continue
-                yield transformed_record
-        finally:
-            # Always delete the ticket view even if an exception is raised
-            self.delete_ticket_view(view_id)
-
     def get_child_context(self, record: dict, context: Optional[dict]) -> dict:
         """Return the ticket_id for use by child streams."""
         return {"ticket_id": record["id"]}
 
-    def get_url_params(
-        self, context: Optional[dict], next_page_token: Optional[Any]
-    ) -> Dict[str, Any]:
-        """Return the URL parameters for the request.
-
-        For the Tickets View stream, the next cursor is returned in a querystring parameter under the path $.meta.next_items
-        so here we parse the whole url query string in order to extract the cursor.
-
-        """
-        next_page_url_query = parse.parse_qs(next_page_token)
-        if not next_page_url_query:
-            return {"limit": self.config["page_size"]}
-
-        next_page_params = { k: v[0] for (k, v) in next_page_url_query.items() }
-
-        return {
-            "limit": self.config["page_size"],
-            "cursor": next_page_params["cursor"],
-            "ignored_item": next_page_params["ignored_item"],
-            "direction": "next",
-        }
 
 class TicketDetailsStream(GorgiasStream):
     """Uses tickets as a parent stream. This stream is used to get the details of a ticket which are not available
