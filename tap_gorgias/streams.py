@@ -269,6 +269,17 @@ class TicketsStream(GorgiasStream):
             "ignored_item": next_page_params["ignored_item"],
             "direction": "next",
         }
+    
+    def parse_response(self, response: requests.Response) -> Iterable[Dict]:
+        # Sometimes, Gorgias' API will return tickets out of order if they were updated on the same exact second
+        # This override ensures every response will come in the correct order.
+
+        # This WILL NOT prevent a Singer invalid sort exception if the out-of-order fault happens across a page boundary, however.
+        # Hopefully Gorgias fixes their API and that doesn't become an issue.
+        # Once Gorgias has fixed their sorting, this override can be safely removed.
+
+        data = response.json()["data"]
+        return sorted(data, key=lambda ticket: ticket["updated_datetime"])
 
 class TicketDetailsStream(GorgiasStream):
     """Uses tickets as a parent stream. This stream is used to get the details of a ticket which are not available
