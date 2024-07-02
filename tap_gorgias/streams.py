@@ -651,3 +651,35 @@ class IntegreationsStream(GorgiasStream):
         th.Property("locked_datetime", th.DateTimeType),
         th.Property("deleted_datetime", th.DateTimeType),
     ).to_dict()
+
+
+class MacrosStream(GorgiasStream):
+    name = "macros"
+    path = "/api/macros"
+    primary_keys = ["id"]
+
+    schema = th.PropertiesList(
+        th.Property("id", th.IntegerType),
+        th.Property("external_id", th.StringType),
+        th.Property("name", th.StringType),
+        th.Property("intent", th.StringType),
+        th.Property("language", th.StringType),
+        th.Property("usage", th.IntegerType),
+        th.Property("actions", th.ArrayType(
+            th.ObjectType(
+                th.Property("arguments", th.ObjectType(
+                    th.Property("body_html", th.StringType),
+                    th.Property("body_text", th.StringType),
+                    th.Property("tags", th.StringType),
+                    additional_properties=True,
+                )),
+                th.Property("description", th.StringType),
+                th.Property("name", th.StringType),
+                th.Property("title", th.StringType),
+                th.Property("type", th.StringType),
+            )
+        )),
+        th.Property("created_datetime", th.DateTimeType),
+        th.Property("updated_datetime", th.DateTimeType),
+        th.Property("uri", th.StringType),
+    ).to_dict()
